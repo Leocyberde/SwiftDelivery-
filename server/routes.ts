@@ -320,7 +320,7 @@ export async function registerRoutes(
       };
 
       const dualRoute = await storage.createSecondRoute(firstDeliveryId, secondDeliveryData);
-      res.status(201).json(dualRoute);
+      res.status(201).json({ ...dualRoute, courierId: firstDelivery.courierId });
     } catch (err) {
       if (err instanceof z.ZodError) {
         return res.status(400).json({
