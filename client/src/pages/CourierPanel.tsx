@@ -1,0 +1,1294 @@
+import { useState, useEffect } from "react";
+import { useCouriers, useCreateCourier, useUpdateCourierLocation, useUpdateCourierAvailability } from "@/hooks/use-couriers";
+import { useDeliveries, useUpdateDeliveryStatus } from "@/hooks/use-deliveries";
+import { useMerchants } from "@/hooks/use-merchants";
+import { useQueryClient } from "@tanstack/react-query";
+import { 
+  Bike, 
+  Navigation, 
+  MapPin, 
+  CheckCircle, 
+  Package, 
+  DollarSign, 
+  HelpCircle, 
+  Menu, 
+  Home,
+  Bell,
+  Eye,
+  Settings2,
+  AlertTriangle,
+  Search,
+  MessageSquare,
+  Send,
+  Loader2
+} from "lucide-react";
+import { DeliveryMap } from "@/components/DeliveryMap";
+import { useToast } from "@/hooks/use-toast";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { useCourierSupportTickets, useCreateSupportTicket } from "@/hooks/use-support";
+import { useActiveSessions } from "@/hooks/use-chat";
+import ChatWindow from "@/components/ChatWindow";
+import DeliveryChatWindow from "@/components/DeliveryChatWindow";
+
+function playNotificationSound() {
+  try {
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+    
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+    
+    oscillator.frequency.value = 800;
+    oscillator.type = 'sine';
+    
+    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+    
+    oscillator.start(audioContext.currentTime);
+    oscillator.stop(audioContext.currentTime + 0.5);
+  } catch (error) {
+    console.error('Error playing notification sound:', error);
+  }
+}
+
+function NavButton({ active, onClick, icon, label }: { active: boolean, onClick: () => void, icon: React.ReactNode, label: string }) {
+  return (
+    <button 
+      className={`flex flex-col items-center gap-1 transition-all duration-300 ${active ? "text-orange-600 scale-110" : "text-gray-600 hover:text-gray-500"}`}
+      onClick={onClick}
+    >
+      {icon}
+      <span className="text-[10px] font-bold uppercase">{label}</span>
+    </button>
+  );
+}
+
+export default function CourierPanel() {
+  const { data: couriers, isLoading: isLoadingCouriers } = useCouriers();
+  const { data: deliveries = [], isLoading: isLoadingDeliveries } = useDeliveries();
+  const { data: merchants = [] } = useMerchants();
+  const updateStatus = useUpdateDeliveryStatus();
+  const queryClient = useQueryClient();
+  const updateLocation = useUpdateCourierLocation();
+  const updateAvailability = useUpdateCourierAvailability();
+  const createCourier = useCreateCourier();
+  const { toast } = useToast();
+
+  const [activeTab, setActiveTab] = useState("home");
+  const [showBalance, setShowBalance] = useState(true);
+  const [financeTab, setFinanceTab] = useState("lancamentos");
+  const [dateFilter, setDateFilter] = useState("02 - 02 Mar");
+  const [requestTimer, setRequestTimer] = useState(60);
+  const [isRequesting, setIsRequesting] = useState(false);
+  const [hideOverlay, setHideOverlay] = useState(false);
+  const [mapTab, setMapTab] = useState(false);
+
+  const courier = (couriers as any)?.[0];
+
+  const pendingDeliveries = (courier?.isAvailable && !courier?.isBlocked)
+    ? deliveries.filter(d => d.status === "pending")
+    : [];
+
+  const activeDeliveries = courier ? deliveries.filter(d => 
+    (d.status === "accepted" || d.status === "picked_up") && d.courierId === courier.id
+  ) : [];
+  
+  // Support for multiple routes
+  const myActiveDeliveries = activeDeliveries; // Array of 1-2 active deliveries
+  const myActiveDelivery = activeDeliveries[0]; // Primary delivery for backward compatibility
+  const mySecondDelivery = activeDeliveries[1]; // Second delivery if exists
+
+  const [showPickupScreen, setShowPickupScreen] = useState(false);
+  const [showDeliveryScreen, setShowDeliveryScreen] = useState(false);
+
+  useEffect(() {
+    if (myActiveDelivery) {
+      if (myActiveDelivery.status === "accepted") {
+        setShowPickupScreen(true);
+        setShowDeliveryScreen(false);
+      } else if (myActiveDelivery.status === "picked_up") {
+        setShowPickupScreen(false);
+        setShowDeliveryScreen(true);
+      }
+    } else {
+      setShowPickupScreen(false);
+      setShowDeliveryScreen(false);
+    }
+  }, [myActiveDelivery?.status]);
+
+  // Update screen when second delivery is added
+  useEffect(() => {
+    if (mySecondDelivery && myActiveDelivery?.status === "picked_up") {
+      setShowDeliveryScreen(true);
+      playNotificationSound();
+      toast({ 
+        title: "Nova Rota Adicionada!", 
+        description: "Uma segunda rota foi adicionada ao seu painel." 
+      });
+    }
+  }, [mySecondDelivery?.id, myActiveDelivery?.status]);
+
+  // Polling for new deliveries every 3 seconds
+  useEffect(() => {
+    const pollInterval = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ["/api/deliveries"] });
+    }, 3000);
+
+    return () => clearInterval(pollInterval);
+  }, [queryClient]);
+
+  // Listen for second route creation events
+  useEffect(() => {
+    const handleSecondRouteCreated = () => {
+      playNotificationSound();
+      queryClient.invalidateQueries({ queryKey: ["/api/deliveries"] });
+    };
+
+    window.addEventListener('second-route-created', handleSecondRouteCreated);
+    return () => window.removeEventListener('second-route-created', handleSecondRouteCreated);
+  }, [queryClient]);
+
+  useEffect(() => {
+    const handleNewMessage = (e: any) => {
+      if (e.detail.deliveryId === myActiveDelivery?.id || e.detail.deliveryId === mySecondDelivery?.id) {
+        setShowDeliveryChat(true);
+      }
+    };
+    window.addEventListener('new-delivery-message', handleNewMessage);
+    return () => window.removeEventListener('new-delivery-message', handleNewMessage);
+  }, [myActiveDelivery?.id, mySecondDelivery?.id]);
+
+  const deliveredDeliveries = courier ? deliveries.filter(d => d.status === "delivered" && d.courierId === courier.id) : [];
+
+  // Calculate total earnings including linked deliveries
+  const getTotalEarnings = (deliveries: any[]) => {
+    return deliveries.reduce((acc, d) => {
+      const baseEarnings = parseFloat(d.price) * 0.8;
+      const linkedEarnings = d.linkedDeliveryId ? parseFloat(d.totalPrice || d.price) * 0.8 : 0;
+      return acc + baseEarnings + linkedEarnings;
+    }, 0);
+  };
+
+  const handleReject = (deliveryId: number) => {
+    if (!courier) return;
+    updateStatus.mutate({
+      id: deliveryId,
+      status: "rejected",
+      courierId: courier.id
+    }, {
+      onSuccess: () => {
+        toast({ title: "Corrida Rejeitada", description: "O pedido será enviado para outro entregador." });
+        setIsRequesting(false);
+        queryClient.invalidateQueries({ queryKey: ["/api/deliveries"] });
+      }
+    });
+  };
+
+  const handleAccept = (deliveryId: number) => {
+    if (!courier) return;
+    
+    // Check if courier already has 2 active deliveries
+    if (activeDeliveries.length >= 2) {
+      toast({ 
+        title: "Limite atingido", 
+        description: "Você já tem o máximo de 2 rotas ativas.",
+        variant: "destructive"
+      });
+      return;
+    }
+    
+    if (!courier.locationLat || !courier.locationLng) {
+      toast({ 
+        title: "Localização necessária", 
+        description: "Ative sua localização para aceitar entregas.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    updateStatus.mutate({
+      id: deliveryId,
+      status: "accepted",
+      courierId: courier.id
+    }, {
+      onSuccess: () => {
+        toast({ title: "Entrega Aceita", description: activeDeliveries.length === 1 ? "Você pode adicionar uma segunda rota!" : "Vá até o local de coleta." });
+        setIsRequesting(false);
+      }
+    });
+  };
+
+  // Only show new requests if courier doesn't have 2 active deliveries
+  const availablePendingDeliveries = activeDeliveries.length >= 2 ? [] : pendingDeliveries;
+
+  // Get current request - only show if not at max capacity
+  const shouldShowRequests = activeDeliveries.length < 2;
+
+  const currentRequest = shouldShowRequests ? availablePendingDeliveries.find(d => {
+    const rejectedBy = (d as any).rejectedBy || [];
+    const isRejected = rejectedBy.includes(courier?.id);
+    if (!isRejected) return true;
+    
+    const lastRejectedAt = (d as any).lastRejectedAt;
+    if (!lastRejectedAt) return false;
+    
+    const waitTime = 0.5; 
+    const diffSeconds = (new Date().getTime() - new Date(lastRejectedAt).getTime()) / 1000;
+    return diffSeconds >= 30;
+  }) : undefined;
+
+  const merchant = merchants?.find((m: any) => Number(m.id) === Number(myActiveDelivery?.merchantId || currentRequest?.merchantId));
+
+  // Display info about active deliveries
+  const getActiveDeliveriesInfo = () => {
+    if (activeDeliveries.length === 0) return "Nenhuma rota ativa";
+    if (activeDeliveries.length === 1) return "1 rota ativa (máximo 2)";
+    return "2 rotas ativas (máximo atingido)";
+  };
+
+  // Get all deliveries to show in delivery screen (including second route)
+  const getDeliveriesToShow = () => {
+    if (myActiveDelivery?.status === "picked_up") {
+      return mySecondDelivery ? [myActiveDelivery, mySecondDelivery] : [myActiveDelivery];
+    }
+    return myActiveDelivery ? [myActiveDelivery] : [];
+  };
+
+  useEffect(() => {
+    if (activeTab === "home" && !myActiveDelivery && currentRequest && !isRequesting && activeDeliveries.length < 2) {
+      setIsRequesting(true);
+      setRequestTimer(60);
+    }
+  }, [activeTab, myActiveDelivery, currentRequest, isRequesting, activeDeliveries.length]);
+
+  useEffect(() => {
+    let interval: any;
+    if (isRequesting && requestTimer > 0) {
+      interval = setInterval(() => {
+        setRequestTimer((prev) => prev - 1);
+      }, 1000);
+    } else if (requestTimer === 0) {
+      setIsRequesting(false);
+    }
+    return () => clearInterval(interval);
+  }, [isRequesting, requestTimer]);
+
+  const getEarnings = (period: 'today' | 'week') => {
+    const now = new Date();
+    const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(now.getDate() - now.getDay());
+    startOfWeek.setHours(0, 0, 0, 0);
+
+    return deliveredDeliveries
+      .filter(d => {
+        const date = new Date(d.createdAt || "");
+        return period === 'today' ? date >= startOfDay : date >= startOfWeek;
+      })
+      .reduce((acc, d) => {
+        const baseEarnings = parseFloat(d.price) * 0.8;
+        // Add earnings from linked delivery if exists
+        const linkedEarnings = d.linkedDeliveryId && d.totalPrice ? (parseFloat(d.totalPrice) - parseFloat(d.price)) * 0.8 : 0;
+        return acc + baseEarnings + linkedEarnings;
+      }, 0)
+      .toFixed(2);
+  };
+
+  const earningsToday = getEarnings('today');
+  const earningsWeek = getEarnings('week');
+
+  useEffect(() => {
+    if (!courier?.id) return;
+    
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        updateLocation.mutate({
+          id: courier.id,
+          locationLat: position.coords.latitude.toString(),
+          locationLng: position.coords.longitude.toString()
+        });
+      },
+      (error) => console.error("Error watching location:", error),
+      { enableHighAccuracy: true }
+    );
+
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, [courier?.id]);
+
+  useEffect(() => {
+    if (!isLoadingCouriers && (!couriers || (couriers as any).length === 0)) {
+      createCourier.mutate({
+        name: "João Motoboy",
+        locationLat: "-23.5505",
+        locationLng: "-46.6333",
+        isAvailable: true,
+        balance: "7.68"
+      });
+    }
+  }, [couriers, isLoadingCouriers]);
+
+  const [holdProgress, setHoldProgress] = useState(0);
+  const [isHolding, setIsHolding] = useState(false);
+  const [arrivalTimer, setArrivalTimer] = useState(15 * 60); 
+  const [deliveryTimer, setDeliveryTimer] = useState(15 * 60); 
+  const [pickupStep, setPickupStep] = useState(1); 
+  const [deliveryStep, setDeliveryStep] = useState(1); 
+  const [deliveryCode, setDeliveryCode] = useState("");
+  const [showSuccessPopup, setShowSuccessPopup] = useState(false);
+  const [lastEarnings, setLastEarnings] = useState("0,00");
+
+  // Support state
+  const [supportType, setSupportType] = useState<"chat" | "feedback" | null>(null);
+  const [supportMessage, setSupportMessage] = useState("");
+  const { data: courierTickets = [] } = useCourierSupportTickets(courier?.id);
+  const { data: activeSessions = [] } = useActiveSessions();
+  const createTicket = useCreateSupportTicket();
+  const activeChatSession = activeSessions.find(s => s.courierId === courier?.id && s.status === "active");
+
+  const handleSupportSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!supportType || !supportMessage) return;
+
+    createTicket.mutate({
+      courierId: courier.id,
+      senderRole: "courier",
+      type: supportType,
+      subject: supportType === "chat" ? "Chat Motoboy" : "Feedback Motoboy",
+      message: supportMessage,
+      status: "open",
+      response: null
+    }, {
+      onSuccess: () => {
+        toast({ title: "Sucesso", description: "Sua solicitação foi enviada!" });
+        setSupportMessage("");
+        setSupportType(null);
+      }
+    });
+  };
+
+  useEffect(() => {
+    let interval: any;
+    if (myActiveDelivery && myActiveDelivery.status === "accepted" && arrivalTimer > 0) {
+      interval = setInterval(() => {
+        setArrivalTimer((prev) => prev - 1);
+      }, 1000);
+    } else if (arrivalTimer === 0 && myActiveDelivery && myActiveDelivery.status === "accepted") {
+      handleReject(myActiveDelivery.id);
+    }
+    return () => clearInterval(interval);
+  }, [myActiveDelivery, arrivalTimer]);
+
+  useEffect(() => {
+    let interval: any;
+    if (myActiveDelivery && myActiveDelivery.status === "picked_up" && deliveryTimer > 0) {
+      interval = setInterval(() => {
+        setDeliveryTimer((prev) => prev - 1);
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [myActiveDelivery, deliveryTimer]);
+
+  const formatTimer = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  useEffect(() => {
+    let interval: any;
+    if (isHolding && holdProgress < 100) {
+      interval = setInterval(() => {
+        setHoldProgress(prev => Math.min(prev + 5, 100));
+      }, 50);
+    } else if (!isHolding) {
+      setHoldProgress(0);
+    }
+    
+    if (holdProgress === 100 && myActiveDelivery) {
+      setShowPickupScreen(true);
+      setIsHolding(false);
+      setHoldProgress(0);
+      setPickupStep(2);
+    }
+    
+    return () => clearInterval(interval);
+  }, [isHolding, holdProgress, myActiveDelivery]);
+
+  const handleOpenWaze = (address: string) => {
+    const url = `https://waze.com/ul?q=${encodeURIComponent(address)}`;
+    window.open(url, '_blank');
+  };
+
+  if (isLoadingDeliveries || isLoadingCouriers) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-[#f5f6fa]">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-orange-600"></div>
+      </div>
+    );
+  }
+
+  if (courier?.isBlocked) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen bg-[#f5f6fa] p-6 text-center">
+        <div className="bg-white p-8 rounded-3xl shadow-xl border-2 border-red-100 max-w-md w-full space-y-6">
+          <div className="w-20 h-20 bg-red-100 rounded-full flex items-center justify-center mx-auto">
+            <AlertTriangle className="w-10 h-10 text-red-600" />
+          </div>
+          <div className="space-y-2">
+            <h1 className="text-2xl font-bold text-gray-900">Conta Bloqueada</h1>
+            <p className="text-gray-600">
+              Sua conta foi temporariamente suspensa pela administração por violação das diretrizes.
+            </p>
+          </div>
+          {courier.blockedUntil && (
+            <div className="bg-red-50 p-4 rounded-2xl border border-red-100">
+              <p className="text-sm font-bold text-red-700">
+                Desbloqueio previsto para:
+              </p>
+              <p className="text-lg font-bold text-red-800">
+                {new Date(courier.blockedUntil).toLocaleString('pt-BR')}
+              </p>
+            </div>
+          )}
+          <div className="pt-4">
+            <p className="text-xs text-gray-500">
+              Caso acredite que isso seja um erro, entre em contato com o suporte através do WhatsApp da central.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const handleToggleAvailability = (checked: boolean) => {
+    if (!courier) return;
+    
+    if (checked && (!courier.locationLat || !courier.locationLng)) {
+      toast({ 
+        title: "Localização necessária", 
+        description: "Ative sua localização para ficar disponível.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    updateAvailability.mutate({
+      id: courier.id,
+      isAvailable: checked
+    });
+  };
+
+  const handlePickUp = (deliveryId: number) => {
+    updateStatus.mutate({
+      id: deliveryId,
+      status: "picked_up"
+    }, {
+      onSuccess: () => {
+        toast({ title: "Coleta Realizada", description: "Siga para o endereço de entrega." });
+        setShowDeliveryScreen(true);
+      }
+    });
+  };
+
+  const handleArrivalAtDelivery = (deliveryId: number) => {
+    setDeliveryStep(2);
+  };
+
+  const handleComplete = (deliveryId: number) => {
+    if (deliveryCode !== myActiveDelivery?.pickupCode) {
+      toast({ 
+        title: "Código Inválido", 
+        description: "O código de entrega informado está incorreto.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    updateStatus.mutate({
+      id: deliveryId,
+      status: "delivered"
+    }, {
+      onSuccess: () => {
+        const earnings = (parseFloat(myActiveDelivery?.price || "0") * 0.8).toFixed(2);
+        setLastEarnings(earnings.replace('.', ','));
+        setShowSuccessPopup(true);
+        setShowDeliveryScreen(false);
+        setDeliveryStep(1);
+        setDeliveryCode("");
+        setHideOverlay(false);
+      }
+    });
+  };
+
+  return (
+    <div className="flex flex-col min-h-screen bg-white text-black font-sans pb-20 overflow-x-hidden">
+      <div className="fixed top-0 left-0 right-0 z-20 p-4 pointer-events-none">
+        <div className="flex items-center justify-between pointer-events-auto max-w-2xl mx-auto">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 bg-white p-2 pr-4 rounded-full border border-gray-200 shadow-xl">
+              <Avatar className="h-10 w-10 border-2 border-orange-500/20">
+                <AvatarImage src="https://github.com/shadcn.png" />
+                <AvatarFallback>JM</AvatarFallback>
+              </Avatar>
+              <div 
+                className={`flex items-center gap-2 px-4 py-1.5 rounded-full cursor-pointer transition-all duration-300 ${
+                  myActiveDelivery ? "bg-orange-600" : (courier?.isAvailable ? "bg-green-600" : "bg-red-600")
+                }`}
+                onClick={() => {
+                  if (myActiveDelivery) {
+                    setActiveTab("home");
+                    setHideOverlay(false);
+                  } else {
+                    handleToggleAvailability(!courier?.isAvailable);
+                  }
+                }}
+              >
+                <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
+                <span className="text-sm font-bold text-black">
+                  {myActiveDelivery ? "Em rota" : (courier?.isAvailable ? "Disponível" : "Indisponível")}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 bg-white p-1.5 rounded-full border border-gray-200 shadow-xl pointer-events-auto">
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                className="rounded-full text-xs font-bold hover:bg-gray-100 text-black"
+                onClick={() => window.location.href = '/'}
+              >
+                Cliente
+              </Button>
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                className="rounded-full text-xs font-bold hover:bg-gray-100 text-orange-600"
+                onClick={() => window.location.href = '/admin'}
+              >
+                Admin
+              </Button>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-2 pointer-events-auto">
+            <span className="text-orange-600 font-black tracking-tighter text-xl mr-2">LOGISTICA APP</span>
+            <Button size="icon" variant="ghost" className="bg-white rounded-full border border-gray-200 shadow-xl text-orange-600">
+              <Bell className="w-5 h-5" />
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-4 pointer-events-auto max-w-md mx-auto">
+          <div className="flex gap-2 mb-3">
+            <div className="flex-1 bg-white p-3 rounded-2xl border border-gray-200 shadow-xl flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="bg-orange-100 p-1.5 rounded-lg text-orange-600">
+                  <DollarSign className="w-4 h-4" />
+                </div>
+                <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Hoje</span>
+              </div>
+              <span className="text-lg font-black text-black">R$ {earningsToday.replace('.', ',')}</span>
+            </div>
+            <div className="flex-1 bg-white p-3 rounded-2xl border border-gray-200 shadow-xl flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="bg-green-100 p-1.5 rounded-lg text-green-600">
+                  <CheckCircle className="w-4 h-4" />
+                </div>
+                <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Entregas</span>
+              </div>
+              <span className="text-lg font-black text-black">{deliveredDeliveries.filter(d => {
+                const now = new Date();
+                const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                return new Date(d.createdAt || "") >= startOfDay;
+              }).length}</span>
+            </div>
+          </div>
+
+          <div className="bg-white p-3 rounded-2xl border border-gray-200 shadow-xl flex items-center gap-3">
+            <div className="bg-orange-100 p-2 rounded-lg text-orange-600">
+              <Search className="w-4 h-4" />
+            </div>
+            <span className="text-sm text-gray-500 font-medium">
+              {myActiveDelivery ? `Em rota para ${myActiveDelivery.status === 'accepted' ? 'coleta' : 'entrega'}` : "Estamos procurando rotas pra você"}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex-1 relative min-h-screen">
+        {activeTab === "home" ? (
+          <>
+            {(!myActiveDelivery || hideOverlay || mapTab) && (
+              <div className="relative h-screen w-full">
+                <DeliveryMap 
+                  deliveries={mapTab ? activeDeliveries : []}
+                  courierLocation={courier?.locationLat && courier?.locationLng ? [parseFloat(courier.locationLat), parseFloat(courier.locationLng)] : undefined}
+                  height="100vh"
+                />
+                {mapTab && (
+                  <div className="absolute top-20 left-4 right-4 z-[40]">
+                    <div className="bg-white border border-orange-600/30 p-4 rounded-2xl shadow-2xl animate-in slide-in-from-top duration-300">
+                      <div className="flex items-center justify-between mb-2">
+                        <h3 className="text-orange-600 font-black text-sm uppercase tracking-widest flex items-center gap-2">
+                          <Navigation className="w-4 h-4" /> Mapa de Rota
+                        </h3>
+                        <Badge className="bg-orange-600/20 text-orange-600 border-orange-600/30 font-bold">
+                          {activeDeliveries.length} Pedido(s)
+                        </Badge>
+                      </div>
+                      <p className="text-xs text-gray-500">Visualize todas as suas coletas e entregas para planejar sua rota.</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            
+            {myActiveDelivery && !showDeliveryScreen && !hideOverlay && (
+              <div className="absolute inset-0 z-50 bg-white flex flex-col animate-in fade-in duration-300">
+                <div className="p-6 flex items-center justify-between border-b border-gray-200">
+                  <Button variant="ghost" size="icon" className="text-orange-600" onClick={() => pickupStep > 1 && setPickupStep(prev => prev - 1)}>
+                    <Navigation className="w-6 h-6 rotate-[-90deg]" />
+                  </Button>
+                  <h2 className="text-sm font-bold uppercase tracking-widest text-gray-500">Coleta</h2>
+                  <Button variant="ghost" size="icon" className="text-orange-600">
+                    <Bell className="w-6 h-6" />
+                  </Button>
+                </div>
+
+                <div className="flex-1 p-6 space-y-4 overflow-y-auto">
+                  <div className="w-12 h-1 bg-gray-100 rounded-full mx-auto mb-2" />
+                  
+                  <Card className="bg-white border-gray-200 p-4 rounded-2xl flex items-center justify-between">
+                    <div className="flex-1">
+                      <h3 className="text-lg font-bold text-black mb-1">
+                        {merchant?.name || "Estabelecimento"}
+                      </h3>
+                      <p className="text-xs text-gray-500 leading-tight">
+                        {(myActiveDelivery.pickupAddress?.split(',').slice(0, 4).join(', ') || '')}
+                      </p>
+                    </div>
+                    <Button 
+                      onClick={() => handleOpenWaze(myActiveDelivery.pickupAddress)}
+                      className="bg-white border border-orange-600/30 flex flex-col items-center justify-center p-2 h-16 w-16 rounded-xl text-orange-600"
+                    >
+                      <Navigation className="w-5 h-5 mb-1" />
+                      <span className="text-[10px] font-bold">Mapa</span>
+                    </Button>
+                  </Card>
+
+                  {pickupStep === 1 && (
+                    <Card className="bg-white border-gray-200 p-5 rounded-2xl">
+                      <h4 className="text-lg font-bold text-black mb-4">Você está indo pra coleta</h4>
+                      <div className="relative h-1 bg-gray-100 rounded-full mb-3 overflow-hidden">
+                        <div 
+                          className="absolute left-0 top-0 bottom-0 bg-[#00a335] rounded-full transition-all duration-1000" 
+                          style={{ width: `${(arrivalTimer / (15 * 60)) * 100}%` }}
+                        />
+                      </div>
+                      <p className="text-sm text-gray-500">
+                        Tempo restante: <span className="text-black font-bold">{formatTimer(arrivalTimer)}</span>
+                      </p>
+                    </Card>
+                  )}
+
+                  {pickupStep >= 2 && (
+                    <>
+                      <div className="bg-white/40 border border-[#2b3a4a] p-5 rounded-2xl flex gap-4">
+                        <div className="bg-white p-2 h-fit rounded-lg shadow-inner">
+                          <HelpCircle className="w-6 h-6 text-[#00a3ff]" />
+                        </div>
+                        <div className="space-y-1">
+                          <h4 className="text-[#00a3ff] font-bold text-sm">Confirmação da coleta</h4>
+                          <p className="text-xs text-gray-300 leading-normal">
+                            {pickupStep === 2 
+                              ? "Ao coletar os pedidos, toque no botão e informe o código de coleta pra loja"
+                              : "Informe o nome e código abaixo para a loja concluir a coleta"}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="bg-white border border-gray-200 rounded-2xl p-5 flex items-center justify-between shadow-lg">
+                        <div className="flex flex-col">
+                          <span className="text-lg font-black text-black">1º Pedido: {myActiveDelivery.orderNumber}</span>
+                        </div>
+                        <Badge className="bg-[#00a335]/20 text-[#00a335] font-bold px-4 py-1.5 rounded-full border border-[#00a335]/30">Pronto</Badge>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                <div className="p-8 border-t border-gray-200">
+                  {pickupStep === 1 ? (
+                    <div className="relative w-full h-16 bg-gray-900 rounded-2xl overflow-hidden border border-gray-200 group">
+                      <div 
+                        className="absolute left-0 top-0 bottom-0 bg-orange-600/20 transition-all duration-75"
+                        style={{ width: `${holdProgress}%` }}
+                      />
+                      <button
+                        className="absolute inset-0 w-full h-full flex items-center justify-center text-orange-600 font-black text-lg"
+                        onMouseDown={() => setIsHolding(true)}
+                        onMouseUp={() => setIsHolding(false)}
+                        onMouseLeave={() => setIsHolding(false)}
+                        onTouchStart={() => setIsHolding(true)}
+                        onTouchEnd={() => setIsHolding(false)}
+                        onClick={() => {
+                          if (holdProgress >= 100) {
+                            setPickupStep(2);
+                          }
+                        }}
+                      >
+                        Cheguei na coleta
+                      </button>
+                    </div>
+                  ) : pickupStep === 2 ? (
+                    <Button 
+                      className="w-full bg-transparent border border-orange-600 hover:bg-orange-600/10 text-orange-600 font-black h-16 rounded-2xl text-lg shadow-xl"
+                      onClick={() => setPickupStep(3)}
+                    >
+                      Coletar os pedidos
+                    </Button>
+                  ) : (
+                    <Button 
+                      className="w-full bg-[#00a335] hover:bg-[#008a2d] text-black font-black h-16 rounded-2xl text-lg shadow-xl"
+                      onClick={() => {
+                        handlePickUp(myActiveDelivery.id);
+                        setPickupStep(1);
+                      }}
+                    >
+                      Concluir Coleta
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {myActiveDelivery && showDeliveryScreen && !hideOverlay && (
+              <div className="absolute inset-0 z-[70] bg-white flex flex-col animate-in fade-in duration-300">
+                {showDeliveryChat && (
+                  <DeliveryChatWindow 
+                    deliveryId={myActiveDelivery.id}
+                    receiverName={myActiveDelivery.customerName}
+                    userRole="courier"
+                    onClose={() => setShowDeliveryChat(false)}
+                  />
+                )}
+                <div className="p-6 flex items-center justify-between border-b border-gray-200">
+                  <Button variant="ghost" size="icon" className="text-orange-600" onClick={() => deliveryStep > 1 ? setDeliveryStep(1) : setShowDeliveryScreen(false)}>
+                    <Navigation className="w-6 h-6 rotate-[-90deg]" />
+                  </Button>
+                  <h2 className="text-sm font-bold uppercase tracking-widest text-black">ENTREGA</h2>
+                  <Button variant="ghost" size="icon" className="text-orange-600">
+                    <div className="relative">
+                      <HelpCircle className="w-6 h-6" />
+                      <div className="absolute -top-1 -right-1 w-2 h-2 bg-orange-600 rounded-full" />
+                    </div>
+                  </Button>
+                </div>
+
+                <div className="flex-1 p-6 space-y-4 overflow-y-auto">
+                  <div className="w-12 h-1 bg-gray-100 rounded-full mx-auto mb-2" />
+                  
+                  <Card className="bg-white border-gray-200 p-5 rounded-2xl flex items-center justify-between">
+                    <div className="flex-1">
+                      <h3 className="text-sm font-bold text-black mb-2 uppercase tracking-wider">Endereço de entrega</h3>
+                      <p className="text-sm text-gray-500 leading-tight">
+                        {(myActiveDelivery.deliveryAddress?.split(',').slice(0, 4).join(', ') || '')} - {myActiveDelivery.customerName}
+                      </p>
+                      {myActiveDelivery.observation && (
+                        <p className="text-xs text-orange-400 mt-2 italic">
+                          Obs: {myActiveDelivery.observation}
+                        </p>
+                      )}
+                    </div>
+                      <div className="flex flex-col gap-2 ml-4">
+                        <Button 
+                          onClick={() => handleOpenWaze(myActiveDelivery.deliveryAddress)}
+                          className="bg-orange-600 flex flex-col items-center justify-center p-2 h-16 w-16 rounded-xl text-black"
+                        >
+                          <Navigation className="w-5 h-5 mb-1 fill-white" />
+                          <span className="text-[10px] font-bold">Mapa</span>
+                        </Button>
+                        <Button 
+                          onClick={() => setShowDeliveryChat(true)}
+                          className="bg-[#00a335] flex flex-col items-center justify-center p-2 h-16 w-16 rounded-xl text-black"
+                        >
+                          <MessageSquare className="w-5 h-5 mb-1" />
+                          <span className="text-[10px] font-bold">Chat</span>
+                        </Button>
+                      </div>
+                    </Card>
+
+                  <Card className="bg-white border-gray-200 p-6 rounded-2xl space-y-4">
+                    <div className="space-y-1">
+                      <p className="text-sm text-gray-500">Pedido {myActiveDelivery.orderNumber}</p>
+                      <h3 className="text-xl font-black text-black">{myActiveDelivery.customerName}</h3>
+                      <p className="text-sm text-gray-500">{merchant?.name || "Estabelecimento"}</p>
+                    </div>
+
+                    <div className="flex items-center gap-2 text-gray-500">
+                      <div className="w-5 h-5 rounded bg-gray-700 flex items-center justify-center">
+                        <DollarSign className="w-3 h-3 text-black" />
+                      </div>
+                      <span className="text-sm">Cliente pagou no app</span>
+                    </div>
+
+                    {deliveryStep === 2 && (
+                      <div className="pt-4 border-t border-white/10 space-y-4">
+                        <div className="relative">
+                          <button 
+                            className="w-full bg-transparent border border-orange-600 text-orange-600 font-bold py-4 rounded-xl flex items-center justify-center gap-3"
+                            onClick={() => {}}
+                          >
+                            Digitar código do cliente
+                          </button>
+                          <div className="absolute -right-2 -top-2 w-10 h-10 bg-orange-600 rounded-full flex items-center justify-center shadow-lg">
+                            <Package className="w-5 h-5 text-black" />
+                          </div>
+                        </div>
+                        
+                        <input 
+                          type="text"
+                          placeholder="Digite o código aqui"
+                          className="w-full bg-white border border-white/10 rounded-xl p-4 text-center text-2xl font-black tracking-[10px] focus:outline-none focus:border-orange-600 text-black"
+                          value={deliveryCode}
+                          onChange={(e) => setDeliveryCode(e.target.value)}
+                          maxLength={4}
+                        />
+                      </div>
+                    )}
+                  </Card>
+
+                  {myActiveDelivery.observation && (
+                    <Card className="bg-white border-gray-200 p-5 rounded-2xl">
+                      <h4 className="text-xs font-bold text-gray-500 uppercase mb-2">Observação</h4>
+                      <p className="text-sm text-black">{myActiveDelivery.observation}</p>
+                    </Card>
+                  )}
+                </div>
+
+                <div className="p-8 border-t border-gray-200">
+                  {deliveryStep === 1 ? (
+                    <Button 
+                      className="w-full bg-transparent border border-orange-600 hover:bg-orange-600/10 text-orange-600 font-black h-16 rounded-2xl text-lg shadow-xl"
+                      onClick={() => handleArrivalAtDelivery(myActiveDelivery.id)}
+                    >
+                      Cheguei na entrega
+                    </Button>
+                  ) : (
+                    <Button 
+                      className={`w-full font-black h-16 rounded-2xl text-lg shadow-xl transition-all duration-300 ${
+                        deliveryCode.length === 4 
+                          ? "bg-[#00a335] text-black" 
+                          : "bg-gray-100 text-gray-500 cursor-not-allowed"
+                      }`}
+                      disabled={deliveryCode.length !== 4}
+                      onClick={() => handleComplete(myActiveDelivery.id)}
+                    >
+                      Sair da entrega
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {!myActiveDelivery && isRequesting && currentRequest && (
+              <div className="absolute inset-0 z-50 bg-white animate-in fade-in duration-300">
+                <div className="flex flex-col h-full">
+                  <div className="h-[45%] relative">
+                    <DeliveryMap 
+                      pickupAddress={(currentRequest.pickupAddress?.split(',').slice(0, 4).join(', ') || '')}
+                      deliveryAddress={(currentRequest.deliveryAddress?.split(',').slice(0, 4).join(', ') || '')}
+                      height="100%"
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-t from-[#121214] to-transparent" />
+                    
+                    <div className="absolute top-6 left-6 right-6 flex items-center justify-between">
+                      <Badge className="bg-orange-600 text-black font-black px-4 py-2 rounded-xl text-lg shadow-2xl">
+                        NOVA ROTA
+                      </Badge>
+                      <div className="bg-white/80 backdrop-blur-md p-3 rounded-2xl border border-white/10 flex items-center gap-2">
+                        <Clock className="w-4 h-4 text-orange-600" />
+                        <span className="text-lg font-black text-black">{requestTimer}s</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex-1 px-8 pt-4 space-y-6">
+                    <div className="flex items-center justify-between">
+                      <div className="space-y-1">
+                        <h2 className="text-3xl font-black text-black">R$ {(parseFloat(currentRequest.price) * 0.8).toFixed(2).replace('.', ',')}</h2>
+                        <p className="text-sm font-bold text-gray-500 uppercase tracking-widest">{currentRequest.distanceKm} KM • {merchant?.name || "Estabelecimento"}</p>
+                      </div>
+                      <div className="bg-[#00a335]/10 p-4 rounded-3xl border border-[#00a335]/20">
+                        <Package className="w-8 h-8 text-[#00a335]" />
+                      </div>
+                    </div>
+
+                    <div className="space-y-8 relative before:absolute before:left-[11px] before:top-4 before:bottom-4 before:w-0.5 before:bg-gray-100">
+                      <div className="flex gap-6 relative">
+                        <div className="w-6 h-6 rounded-full bg-[#00a335] border-4 border-[#121214] z-10 shadow-[0_0_15px_rgba(0,163,53,0.5)]" />
+                        <div className="space-y-1">
+                          <p className="text-[10px] font-black text-gray-500 uppercase tracking-widest">Coleta</p>
+                          <p className="text-sm font-bold text-gray-300 leading-tight">{(currentRequest.pickupAddress?.split(',').slice(0, 4).join(', ') || '')}</p>
+                        </div>
+                      </div>
+                      <div className="flex gap-6 relative">
+                        <div className="w-6 h-6 rounded-full bg-orange-600 border-4 border-[#121214] z-10 shadow-[0_0_15px_rgba(243,84,93,0.5)]" />
+                        <div className="space-y-1">
+                          <p className="text-[10px] font-black text-gray-500 uppercase tracking-widest">Entrega</p>
+                          <p className="text-sm font-bold text-gray-300 leading-tight">{(currentRequest.deliveryAddress?.split(',').slice(0, 4).join(', ') || '')}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="pt-4 grid grid-cols-2 gap-4">
+                      <Button 
+                        variant="outline" 
+                        className="h-16 rounded-2xl border-white/10 bg-transparent text-gray-500 font-bold text-lg hover:bg-white/5"
+                        onClick={() => handleReject(currentRequest.id)}
+                      >
+                        REJEITAR
+                      </Button>
+                      <Button 
+                        className="h-16 rounded-2xl bg-[#00a335] text-black font-black text-xl shadow-[0_10px_30px_rgba(0,163,53,0.3)] hover:bg-[#008a2d] hover:scale-[1.02] transition-all"
+                        onClick={() => handleAccept(currentRequest.id)}
+                      >
+                        ACEITAR
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        ) : activeTab === "finance" ? (
+          <div className="p-6 pt-24 space-y-8">
+            <div className="space-y-2">
+              <p className="text-gray-500 font-bold uppercase tracking-widest text-xs">Saldo disponível</p>
+              <div className="flex items-center gap-4">
+                <p className="text-5xl font-black text-black">R$ {courier?.balance?.replace('.', ',') || '0,00'}</p>
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  className="text-gray-500"
+                  onClick={() => setShowBalance(!showBalance)}
+                >
+                  {showBalance ? <Eye className="w-6 h-6" /> : <EyeOff className="w-6 h-6" />}
+                </Button>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-3xl p-6 border border-gray-200 shadow-2xl">
+              <p className="text-gray-500 font-bold text-xs uppercase mb-1">Ganhos da semana</p>
+              <p className="text-4xl font-black text-black">R$ {earningsWeek.replace('.', ',')}</p>
+            </div>
+
+            <Button className="w-full bg-transparent border border-orange-600 text-orange-600 font-bold h-14 rounded-xl hover:bg-orange-600/10 mb-12">
+              Antecipar repasse
+            </Button>
+
+            <div className="space-y-6">
+              <h3 className="text-xl font-bold">Extrato</h3>
+              
+              <div className="flex border-b border-gray-200">
+                <button 
+                  className={`flex-1 py-3 font-bold text-center transition-all ${financeTab === 'lancamentos' ? "text-orange-600 border-b-2 border-orange-600" : "text-gray-500"}`}
+                  onClick={() => setFinanceTab('lancamentos')}
+                >
+                  Lançamentos
+                </button>
+                <button 
+                  className={`flex-1 py-3 font-bold text-center transition-all ${financeTab === 'repasses' ? "text-orange-600 border-b-2 border-orange-600" : "text-gray-500"}`}
+                  onClick={() => setFinanceTab('repasses')}
+                >
+                  Repasses
+                </button>
+              </div>
+
+              <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-hide">
+                <Button variant="secondary" className="bg-white text-black rounded-full border border-gray-200 px-6 h-11 font-bold whitespace-nowrap">
+                  {dateFilter} <Menu className="w-4 h-4 ml-2 rotate-90" />
+                </Button>
+                <Button variant="secondary" className="bg-white text-black rounded-full border border-gray-200 px-6 h-11 font-bold">
+                  Entradas
+                </Button>
+                <Button variant="secondary" className="bg-white text-black rounded-full border border-gray-200 px-6 h-11 font-bold">
+                  Saídas
+                </Button>
+              </div>
+
+              <div className="space-y-6 pt-4">
+                <div className="space-y-1">
+                  <p className="text-gray-500 font-bold">Ganhos da semana</p>
+                  <p className="text-2xl font-black text-black">R$ {earningsWeek.replace('.', ',')}</p>
+                </div>
+
+                <div className="space-y-4">
+                  <p className="text-gray-500 font-bold">Hoje, {new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'long' })}</p>
+                  
+                  {deliveredDeliveries.length > 0 ? (
+                    deliveredDeliveries
+                      .sort((a, b) => new Date(b.createdAt || "").getTime() - new Date(a.createdAt || "").getTime())
+                      .map(d => (
+                      <div key={d.id} className="flex items-center justify-between py-2">
+                        <div className="flex items-center gap-4">
+                          <div className="bg-white p-3 rounded-full border border-gray-200">
+                            <Navigation className="w-5 h-5 text-gray-500" />
+                          </div>
+                          <div>
+                            <p className="font-bold text-black">Rota completa</p>
+                            <p className="text-xs text-gray-500">#{d.orderNumber} • {new Date(d.createdAt || "").toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</p>
+                          </div>
+                        </div>
+                        <p className="font-black text-black">R$ {(parseFloat(d.price) * 0.8).toFixed(2).replace('.', ',')}</p>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-gray-500 text-sm">Nenhum lançamento para hoje</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : activeTab === 'support' ? (
+          <div className="p-6 space-y-8 pb-32">
+            <div className="flex items-center gap-4 mb-6">
+              <div className="p-4 bg-orange-600/10 rounded-full text-orange-600">
+                <MessageSquare className="w-8 h-8" />
+              </div>
+              <div>
+                <h2 className="text-2xl font-bold text-black">Suporte ao Motoboy</h2>
+                <p className="text-sm text-gray-500">Como podemos te ajudar?</p>
+              </div>
+            </div>
+
+            {!supportType ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {myActiveDelivery ? (
+                  <button 
+                    onClick={() => setSupportType("chat")}
+                    className="p-6 rounded-2xl border border-gray-200 bg-white hover:border-orange-600 transition-all text-left group"
+                  >
+                    <div className="p-3 rounded-xl bg-green-100/10 text-green-500 w-fit mb-4 group-hover:bg-green-500 group-hover:text-black transition-colors">
+                      <MessageSquare className="w-6 h-6" />
+                    </div>
+                    <h3 className="font-bold text-lg text-black mb-2">Ativar Chat Online</h3>
+                    <p className="text-sm text-gray-500">Fale com o suporte sobre sua rota atual.</p>
+                  </button>
+                ) : (
+                  <button 
+                    onClick={() => setSupportType("feedback")}
+                    className="p-6 rounded-2xl border border-gray-200 bg-white hover:border-orange-600 transition-all text-left group"
+                  >
+                    <div className="p-3 rounded-xl bg-blue-100/10 text-blue-500 w-fit mb-4 group-hover:bg-blue-500 group-hover:text-black transition-colors">
+                      <Send className="w-6 h-6" />
+                    </div>
+                    <h3 className="font-bold text-lg text-black mb-2">Mandar Feedback</h3>
+                    <p className="text-sm text-gray-500">Sugestões ou elogios sobre a plataforma.</p>
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="bg-white p-6 rounded-2xl border border-gray-200">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-xl font-bold text-black">
+                    {supportType === "chat" ? "Iniciar Chat Online" : "Enviar Feedback"}
+                  </h3>
+                  <button onClick={() => setSupportType(null)} className="text-sm text-orange-600 underline">Voltar</button>
+                </div>
+
+                <form onSubmit={handleSupportSubmit} className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-gray-300">
+                      {supportType === "chat" ? "Qual o problema com a rota?" : "Sua mensagem"}
+                    </label>
+                    <textarea 
+                      required 
+                      value={supportMessage}
+                      onChange={(e) => setSupportMessage(e.target.value)}
+                      rows={4} 
+                      placeholder="Descreva aqui..." 
+                      className="w-full px-4 py-3 rounded-xl bg-white border border-white/10 text-black focus:border-orange-600 outline-none resize-none" 
+                    />
+                  </div>
+                  <button 
+                    type="submit" 
+                    disabled={createTicket.isPending}
+                    className="w-full py-4 bg-orange-600 text-black rounded-xl font-bold shadow-lg flex items-center justify-center gap-2"
+                  >
+                    {createTicket.isPending ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+                    {supportType === "chat" ? "Solicitar Atendimento" : "Enviar Feedback"}
+                  </button>
+                </form>
+              </div>
+            )}
+
+            <div className="mt-8">
+              <h3 className="text-lg font-bold text-black mb-4">Chamados Recentes</h3>
+              <div className="space-y-4">
+                {courierTickets.length === 0 ? (
+                  <p className="text-gray-500 text-sm text-center py-8 border border-dashed border-white/10 rounded-2xl">Nenhum chamado aberto.</p>
+                ) : (
+                  courierTickets.map(ticket => (
+                    <div key={ticket.id} className="p-4 bg-white border border-gray-200 rounded-xl">
+                      <div className="flex justify-between items-start mb-2">
+                        <Badge className={ticket.status === 'open' ? 'bg-orange-600/20 text-orange-500' : 'bg-green-500/20 text-green-500'}>
+                          {ticket.status === 'open' ? 'Aberto' : 'Finalizado'}
+                        </Badge>
+                        <span className="text-[10px] text-gray-500">{new Date(ticket.createdAt!).toLocaleDateString()}</span>
+                      </div>
+                      <p className="text-sm text-black font-bold">{ticket.subject}</p>
+                      <p className="text-xs text-gray-500 mt-1 line-clamp-2">{ticket.message}</p>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center justify-center min-h-screen">
+            <h2 className="text-2xl font-bold">Em breve</h2>
+          </div>
+        )}
+      </div>
+
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-6 py-4 z-40">
+        <div className="flex items-center justify-around max-w-2xl mx-auto">
+          <NavButton 
+            active={activeTab === 'home' && !mapTab} 
+            onClick={() => {
+              setActiveTab('home');
+              setMapTab(false);
+              if (myActiveDelivery) setHideOverlay(false);
+            }}
+            icon={<Home className="w-7 h-7" />}
+            label="Início"
+          />
+          {activeDeliveries.length > 0 && (
+            <NavButton 
+              active={mapTab} 
+              onClick={() => {
+                setActiveTab('home');
+                setMapTab(true);
+                setHideOverlay(true);
+              }}
+              icon={<Navigation className="w-7 h-7" />}
+              label="Mapa"
+            />
+          )}
+          <NavButton 
+            active={activeTab === 'finance'} 
+            onClick={() => setActiveTab('finance')}
+            icon={<DollarSign className="w-7 h-7" />}
+            label="Ganhos"
+          />
+          <NavButton 
+            active={activeTab === 'schedule'} 
+            onClick={() => setActiveTab('schedule')}
+            icon={<Package className="w-7 h-7" />}
+            label="Agenda"
+          />
+          <NavButton 
+            active={activeTab === 'profile'} 
+            onClick={() => setActiveTab('profile')}
+            icon={<Bike className="w-7 h-7" />}
+            label="Perfil"
+          />
+          <NavButton 
+            active={activeTab === 'support'} 
+            onClick={() => setActiveTab('support')}
+            icon={<HelpCircle className="w-7 h-7" />}
+            label="Suporte"
+          />
+        </div>
+      </div>
+
+      {activeChatSession && (
+        <ChatWindow
+          ticketId={activeChatSession.ticketId}
+          merchantName="Suporte Admin"
+          userRole="merchant" // Using merchant role for UI consistency as it's the 'user' side
+          onClose={() => {}}
+        />
+      )}
+
+      {showSuccessPopup && (
+        <div className="fixed inset-0 z-[100] flex items-end justify-center bg-black/60 animate-in fade-in duration-300">
+          <div className="w-full max-w-md bg-white rounded-t-[32px] p-8 flex flex-col items-center text-center animate-in slide-in-from-bottom duration-500 shadow-[0_-10px_40px_rgba(0,0,0,0.5)] border-t border-gray-200">
+            <div className="w-12 h-1.5 bg-gray-700 rounded-full mb-8 opacity-50" />
+            
+            <div className="relative mb-6">
+              <div className="text-[80px] leading-none mb-2 filter drop-shadow-lg">🤝</div>
+              <div className="absolute -top-4 -right-8 bg-orange-600 text-black font-black px-5 py-1.5 rounded-full text-2xl rotate-12 shadow-xl border-2 border-white/10 uppercase tracking-tighter">
+                BOA!
+              </div>
+            </div>
+
+            <h2 className="text-xl font-bold text-black mb-2 tracking-tight">
+              Oba, mais uma rota concluída!
+            </h2>
+            
+            <div className="space-y-1 mb-8">
+              <p className="text-gray-500 text-sm font-medium">Você ganhou:</p>
+              <p className="text-4xl font-black text-black tracking-tighter">R$ {lastEarnings}</p>
+              <p className="text-gray-500 text-xs font-semibold uppercase tracking-wider mt-1">Rota finalizada com sucesso!</p>
+            </div>
+
+            <button 
+              onClick={() => setShowSuccessPopup(false)}
+              className="text-orange-600 font-black text-lg py-2 transition-all hover:scale-110 active:scale-95 uppercase tracking-widest"
+            >
+              Ok, entendi
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Clock(props: any) {
+  return (
+    <svg
+      {...props}
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <polyline points="12 6 12 12 16 14" />
+    </svg>
+  )
+}
+
+function EyeOff(props: any) {
+  return (
+    <svg
+      {...props}
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
+      <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+      <path d="M6.61 6.61A13.52 13.52 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
+      <line x1="2" x2="22" y1="2" y2="22" />
+    </svg>
+  )
+}
