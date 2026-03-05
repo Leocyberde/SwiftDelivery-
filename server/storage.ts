@@ -281,9 +281,15 @@ export class DatabaseStorage implements IStorage {
       throw new Error('First delivery not found');
     }
 
+    // Generate 4-digit order number and pickup code for the second route
+    const orderNumber = Math.floor(1000 + Math.random() * 9000).toString();
+    const pickupCode = Math.floor(1000 + Math.random() * 9000).toString();
+
     // Create second delivery with routeNumber = 2
     const [secondDelivery] = await db.insert(deliveries).values({
       ...secondDeliveryData,
+      orderNumber,
+      pickupCode,
       routeNumber: 2,
       linkedDeliveryId: firstDeliveryId,
     }).returning();

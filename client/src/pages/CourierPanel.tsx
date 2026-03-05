@@ -822,45 +822,47 @@ export default function CourierPanel() {
                       </div>
                     </Card>
 
-                  <Card className="bg-white border-gray-200 p-6 rounded-2xl space-y-4">
-                    <div className="space-y-1">
-                      <p className="text-sm text-gray-500">Pedido {myActiveDelivery.orderNumber}</p>
-                      <h3 className="text-xl font-black text-black">{myActiveDelivery.customerName}</h3>
-                      <p className="text-sm text-gray-500">{merchant?.name || "Estabelecimento"}</p>
-                    </div>
-
-                    <div className="flex items-center gap-2 text-gray-500">
-                      <div className="w-5 h-5 rounded bg-gray-700 flex items-center justify-center">
-                        <DollarSign className="w-3 h-3 text-black" />
+                  {getDeliveriesToShow().map((delivery, index) => (
+                    <Card key={delivery.id} className="bg-white border-gray-200 p-6 rounded-2xl space-y-4">
+                      <div className="space-y-1">
+                        <p className="text-sm text-gray-500">Pedido {delivery.orderNumber} {index === 1 ? "(2ª Rota)" : ""}</p>
+                        <h3 className="text-xl font-black text-black">{delivery.customerName}</h3>
+                        <p className="text-sm text-gray-500">{merchants.find(m => m.id === delivery.merchantId)?.name || "Estabelecimento"}</p>
                       </div>
-                      <span className="text-sm">Cliente pagou no app</span>
-                    </div>
 
-                    {deliveryStep === 2 && (
-                      <div className="pt-4 border-t border-white/10 space-y-4">
-                        <div className="relative">
-                          <button 
-                            className="w-full bg-transparent border border-orange-600 text-orange-600 font-bold py-4 rounded-xl flex items-center justify-center gap-3"
-                            onClick={() => {}}
-                          >
-                            Digitar código do cliente
-                          </button>
-                          <div className="absolute -right-2 -top-2 w-10 h-10 bg-orange-600 rounded-full flex items-center justify-center shadow-lg">
-                            <Package className="w-5 h-5 text-black" />
-                          </div>
+                      <div className="flex items-center gap-2 text-gray-500">
+                        <div className="w-5 h-5 rounded bg-gray-700 flex items-center justify-center">
+                          <DollarSign className="w-3 h-3 text-black" />
                         </div>
-                        
-                        <input 
-                          type="text"
-                          placeholder="Digite o código aqui"
-                          className="w-full bg-white border border-white/10 rounded-xl p-4 text-center text-2xl font-black tracking-[10px] focus:outline-none focus:border-orange-600 text-black"
-                          value={deliveryCode}
-                          onChange={(e) => setDeliveryCode(e.target.value)}
-                          maxLength={4}
-                        />
+                        <span className="text-sm">Cliente pagou no app</span>
                       </div>
-                    )}
-                  </Card>
+
+                      {deliveryStep === 2 && (
+                        <div className="pt-4 border-t border-white/10 space-y-4">
+                          <div className="relative">
+                            <button 
+                              className="w-full bg-transparent border border-orange-600 text-orange-600 font-bold py-4 rounded-xl flex items-center justify-center gap-3"
+                              onClick={() => {}}
+                            >
+                              Código de coleta: {delivery.pickupCode}
+                            </button>
+                            <div className="absolute -right-2 -top-2 w-10 h-10 bg-orange-600 rounded-full flex items-center justify-center shadow-lg">
+                              <Package className="w-5 h-5 text-black" />
+                            </div>
+                          </div>
+                          
+                          <input 
+                            type="text"
+                            placeholder="Digite o código aqui"
+                            className="w-full bg-white border border-white/10 rounded-xl p-4 text-center text-2xl font-black tracking-[10px] focus:outline-none focus:border-orange-600 text-black"
+                            value={deliveryCode}
+                            onChange={(e) => setDeliveryCode(e.target.value)}
+                            maxLength={4}
+                          />
+                        </div>
+                      )}
+                    </Card>
+                  ))}
 
                   {myActiveDelivery.observation && (
                     <Card className="bg-white border-gray-200 p-5 rounded-2xl">
